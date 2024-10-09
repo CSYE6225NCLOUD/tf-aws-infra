@@ -1,3 +1,3 @@
 # tf-aws-infra
 
-Updated read me fie
+Updated read me file
