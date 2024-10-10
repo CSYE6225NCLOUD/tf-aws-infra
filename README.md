@@ -1,4 +1,9 @@
 # tf-aws-infra
 
-Updated read me files
-Added yml
+Contains tf files-
+variables
+main
+providers
+version
+
+Added yml for CI
