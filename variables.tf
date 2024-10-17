@@ -36,3 +36,24 @@ variable "availability_zone" {
   type        = list(string)
   default     = ["us-east-1a", "us-east-1b", "us-east-1c"]
 }
+
+variable "instance_type" {
+  description = "The instance type"
+  type        = string
+  default     = "t2.micro"
+}
+
+variable "custom_ami_id" {
+  description = "The custom AMI ID for your instance"
+  type        = string
+}
+
+variable "application_port" {
+  description = "The port on which the application runs."
+  default     = 4100
+}
+
+variable "key_name" {
+  type    = string
+  default = "ubuntu"
+}
