@@ -112,6 +112,72 @@ resource "aws_security_group" "app_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
+resource "aws_security_group" "security_group_db" {
+  name        = "security_group_database"
+  description = "Security group for the database"
+  vpc_id      = aws_vpc.my_vpc.id
+
+  ingress {
+    from_port       = var.database_port
+    to_port         = var.database_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-security_group_db"
+  }
+}
+
+resource "aws_db_parameter_group" "parameter_group_db" {
+  name        = "parameter-group-db"
+  family      = "mysql8.0"
+  description = "Parameter group"
+
+  tags = {
+    Name = "${var.project_name}-parameter-group-db"
+  }
+}
+
+resource "aws_db_subnet_group" "subnet_group_db" {
+  name       = "${var.project_name}-subnet_group_db"
+  subnet_ids = aws_subnet.private_subnet[*].id
+
+  tags = {
+    Name = "${var.project_name}-subnet_group_db"
+  }
+}
+
+resource "aws_db_instance" "my_rds_instance" {
+  allocated_storage      = var.allocated_storage
+  instance_class         = var.instance_class
+  engine                 = var.db_engine
+  db_name                = var.db_name
+  username               = var.username
+  password               = var.db_password
+  parameter_group_name   = aws_db_parameter_group.parameter_group_db.name
+  db_subnet_group_name   = aws_db_subnet_group.subnet_group_db.name
+  multi_az               = var.db_multi_authorization
+  publicly_accessible    = var.db_public_access
+  vpc_security_group_ids = [aws_security_group.security_group_db.id]
+
+  # Set this to true if you don't want a final snapshot when deleting the instance
+  skip_final_snapshot = true
+
+  # If skip_final_snapshot is set to false, you need to provide a snapshot identifier
+  # final_snapshot_identifier = "my-final-snapshot-${var.name_of_db}"
+
+  tags = {
+    Name = "${var.project_name}-rds-instance"
+  }
+}
 
 
 
@@ -124,11 +190,25 @@ resource "aws_instance" "web_app_instance" {
   security_groups             = [aws_security_group.app_sg.id]
   key_name                    = var.key_name
 
+  user_data = <<-EOF
+    #!/bin/bash
+    echo "DB_HOST=${aws_db_instance.my_rds_instance.address}" >> /etc/webapp.env
+    echo "DB_NAME=csye6225" >> /etc/webapp.env
+    echo "DB_USER=csye6225" >> /etc/webapp.env
+    echo "DB_PASSWORD=${var.db_password}" >> /etc/webapp.env
+    echo "DB_DIALECT=mysql" >> /etc/webapp.env
+    sudo systemctl daemon-reload
+    sudo systemctl enable webapp
+    sleep 30
+    sudo systemctl restart webapp
+  EOF
+
   root_block_device {
     volume_size           = 25
     volume_type           = "gp2"
     delete_on_termination = true
   }
+
 
   tags = {
     Name = "WebAppInstance"

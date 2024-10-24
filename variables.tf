@@ -57,3 +57,41 @@ variable "key_name" {
   type    = string
   default = "ubuntu"
 }
+variable "database_port" {
+  description = "The port on which database runs."
+  default     = 3306
+}
+
+variable "allocated_storage" {
+  description = "Storage Allocation for database"
+}
+
+variable "db_engine" {
+  description = "Database Engine"
+}
+
+variable "instance_class" {
+  description = "Instance class of Relational Database"
+}
+
+variable "db_name" {
+  description = "Name of the Database"
+}
+
+variable "username" {
+  description = "Username of Database"
+}
+
+variable "db_password" {
+  description = "Password of database"
+}
+
+variable "db_multi_authorization" {
+  description = "Authorization for database"
+  default     = false
+}
+
+variable "db_public_access" {
+  description = "Public accessibility"
+  default     = false
+}
