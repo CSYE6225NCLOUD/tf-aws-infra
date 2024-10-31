@@ -95,3 +95,18 @@ variable "db_public_access" {
   description = "Public accessibility"
   default     = false
 }
+
+variable "route53_zone_id" {
+  description = "The Route 53 hosted zone ID for DNS management"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "Domain name for the Route 53 hosted zone"
+  type        = string
+}
+
+variable "environment" {
+  description = "Environment name, e.g., dev or demo"
+  type        = string
+}

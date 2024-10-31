@@ -1,4 +1,3 @@
-
 resource "aws_vpc" "my_vpc" {
   cidr_block = var.vpc_cidr
   tags = {
@@ -30,6 +29,7 @@ resource "aws_subnet" "private_subnet" {
   }
 }
 
+
 resource "aws_internet_gateway" "my_internet_gateway" {
 
   vpc_id = aws_vpc.my_vpc.id
@@ -38,6 +38,8 @@ resource "aws_internet_gateway" "my_internet_gateway" {
     Name = "${var.project_name}-internetGateway"
   }
 }
+
+
 resource "aws_route_table" "public_route_table" {
   vpc_id = aws_vpc.my_vpc.id
 
@@ -112,6 +114,8 @@ resource "aws_security_group" "app_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
+
+
 resource "aws_security_group" "security_group_db" {
   name        = "security_group_database"
   description = "Security group for the database"
@@ -135,6 +139,88 @@ resource "aws_security_group" "security_group_db" {
     Name = "${var.project_name}-security_group_db"
   }
 }
+
+# IAM Role for EC2 with S3 Permissions
+resource "aws_iam_role" "ec2_role" {
+  name = "${var.project_name}-ec2-s3-access-role"
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : "ec2.amazonaws.com"
+        },
+        "Action" : "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+
+resource "aws_iam_policy" "cloudwatch_agent_policy" {
+  name        = "CloudWatchAgentPolicy"
+  description = "Policy to allow Cloudwatch Agent to publish custom metrics"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "cloudwatch:PutMetricData",
+          "logs:PutLogEvents",
+          "logs:CreateLogStream",
+          "logs:CreateLogGroup",
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
+
+# IAM Policy allowing S3 access only to the specific bucket
+resource "aws_iam_policy" "s3_policy" {
+  name = "${var.project_name}-ec2-s3-policy"
+  policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Action" : [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ],
+        "Resource" : [
+          "arn:aws:s3:::${aws_s3_bucket.user_images.bucket}",
+          "arn:aws:s3:::${aws_s3_bucket.user_images.bucket}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Attach the S3 policy to the IAM role
+resource "aws_iam_role_policy_attachment" "s3_policy_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.s3_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_policy_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.cloudwatch_agent_policy.arn
+}
+
+
+# Instance profile to attach the IAM role to the EC2 instance
+resource "aws_iam_instance_profile" "ec2_instance_profile" {
+  name = "${var.project_name}-ec2-instance-profile"
+  role = aws_iam_role.ec2_role.name
+}
+
 
 resource "aws_db_parameter_group" "parameter_group_db" {
   name        = "parameter-group-db"
@@ -181,6 +267,50 @@ resource "aws_db_instance" "my_rds_instance" {
 
 
 
+# S3 Bucket for User Images
+resource "aws_s3_bucket" "user_images" {
+  bucket        = "${var.project_name}-${random_string.bucket_suffix.result}"
+  acl           = "private"
+  force_destroy = true
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+    }
+  }
+
+  lifecycle_rule {
+    enabled = true
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
+
+  tags = {
+    Name = "${var.project_name}-user-images-bucket"
+  }
+}
+
+# Random Suffix for Unique S3 Bucket Naming
+resource "random_string" "bucket_suffix" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
+
+
+# Output for S3 Bucket Name
+output "s3_bucket_name" {
+  description = "The name of the S3 bucket created for user images"
+  value       = aws_s3_bucket.user_images.bucket
+}
+
+
+
 # Create EC2 Instance
 resource "aws_instance" "web_app_instance" {
   ami                         = var.custom_ami_id
@@ -190,6 +320,9 @@ resource "aws_instance" "web_app_instance" {
   security_groups             = [aws_security_group.app_sg.id]
   key_name                    = var.key_name
 
+  # Attach IAM instance profile
+  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
+
   user_data = <<-EOF
     #!/bin/bash
     echo "DB_HOST=${aws_db_instance.my_rds_instance.address}" >> /etc/webapp.env
@@ -197,6 +330,17 @@ resource "aws_instance" "web_app_instance" {
     echo "DB_USER=csye6225" >> /etc/webapp.env
     echo "DB_PASSWORD=${var.db_password}" >> /etc/webapp.env
     echo "DB_DIALECT=mysql" >> /etc/webapp.env
+    echo "S3_BUCKET_NAME=${aws_s3_bucket.user_images.bucket}" >> /etc/webapp.env
+    echo "AWS_REGION=${var.aws_region}" >> /etc/webapp.env
+  
+
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+    -s
+
+    # Start Webapp Service
     sudo systemctl daemon-reload
     sudo systemctl enable webapp
     sleep 30
@@ -213,4 +357,13 @@ resource "aws_instance" "web_app_instance" {
   tags = {
     Name = "WebAppInstance"
   }
+}
+resource "aws_route53_record" "webapp" {
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "A"
+  ttl     = 60
+  records = [aws_instance.web_app_instance.public_ip]
+
+  depends_on = [aws_instance.web_app_instance]
 }
