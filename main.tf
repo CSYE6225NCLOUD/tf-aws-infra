@@ -54,6 +54,19 @@ resource "aws_route_table_association" "public_association" {
   subnet_id      = aws_subnet.public_subnet[count.index].id
   route_table_id = aws_route_table.public_route_table.id
 }
+resource "aws_route_table" "private_route_table" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  tags = {
+    Name = "${var.project_name}-privateRouteTable"
+  }
+}
+resource "aws_route_table_association" "private_association" {
+  count          = length(var.private_subnets_cidrs)
+  subnet_id      = aws_subnet.private_subnet[count.index].id
+  route_table_id = aws_route_table.private_route_table.id
+}
+
 
 # Security Groups
 # Application Security Group
@@ -73,7 +86,7 @@ resource "aws_security_group" "app_sg" {
     from_port   = var.application_port
     to_port     = var.application_port
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Temporary for debugging; replace with more specific rules if needed
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -122,6 +135,30 @@ resource "aws_security_group" "lb_security_group" {
   }
 }
 
+resource "aws_security_group" "security_group_db" {
+  name        = "security_group_database"
+  description = "Security group for the database"
+  vpc_id      = aws_vpc.my_vpc.id
+
+  ingress {
+    from_port       = var.database_port
+    to_port         = var.database_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-security_group_db"
+  }
+}
+
 # IAM Roles and Instance Profile
 resource "aws_iam_role" "ec2_role" {
   name = "${var.project_name}-ec2-s3-access-role"
@@ -134,6 +171,26 @@ resource "aws_iam_role" "ec2_role" {
           "Service" : "ec2.amazonaws.com"
         },
         "Action" : "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "cloudwatch_agent_policy" {
+  name        = "CloudWatchAgentPolicy"
+  description = "Policy to allow Cloudwatch Agent to publish custom metrics"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "cloudwatch:PutMetricData",
+          "logs:PutLogEvents",
+          "logs:CreateLogStream",
+          "logs:CreateLogGroup",
+        ],
+        Resource = "*"
       }
     ]
   })
@@ -161,10 +218,65 @@ resource "aws_iam_policy" "s3_policy" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "s3_policy_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.s3_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_policy_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.cloudwatch_agent_policy.arn
+}
+
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
   name = "${var.project_name}-ec2-instance-profile"
   role = aws_iam_role.ec2_role.name
 }
+
+
+resource "aws_db_parameter_group" "parameter_group_db" {
+  name        = "parameter-group-db"
+  family      = "mysql8.0"
+  description = "Parameter group"
+
+  tags = {
+    Name = "${var.project_name}-parameter-group-db"
+  }
+}
+
+resource "aws_db_subnet_group" "subnet_group_db" {
+  name       = "${var.project_name}-subnet_group_db"
+  subnet_ids = aws_subnet.private_subnet[*].id
+
+  tags = {
+    Name = "${var.project_name}-subnet_group_db"
+  }
+}
+# RDS Instance
+resource "aws_db_instance" "my_rds_instance" {
+  allocated_storage      = var.allocated_storage
+  instance_class         = var.instance_class
+  engine                 = var.db_engine
+  db_name                = var.db_name
+  username               = var.username
+  password               = var.db_password
+  parameter_group_name   = aws_db_parameter_group.parameter_group_db.name
+  db_subnet_group_name   = aws_db_subnet_group.subnet_group_db.name
+  multi_az               = var.db_multi_authorization
+  publicly_accessible    = var.db_public_access
+  vpc_security_group_ids = [aws_security_group.security_group_db.id]
+
+  # Set this to true if you don't want a final snapshot when deleting the instance
+  skip_final_snapshot = true
+
+  # If skip_final_snapshot is set to false, you need to provide a snapshot identifier
+  # final_snapshot_identifier = "my-final-snapshot-${var.name_of_db}"
+
+  tags = {
+    Name = "${var.project_name}-rds-instance"
+  }
+}
+
 
 # S3 Bucket for User Images
 resource "aws_s3_bucket" "user_images" {
@@ -199,41 +311,10 @@ resource "random_string" "bucket_suffix" {
   upper   = false
 }
 
-# RDS Instance
-resource "aws_db_parameter_group" "parameter_group_db" {
-  name        = "parameter-group-db"
-  family      = "mysql8.0"
-  description = "Parameter group for MySQL"
-  tags = {
-    Name = "${var.project_name}-parameter-group-db"
-  }
-}
 
-resource "aws_db_subnet_group" "subnet_group_db" {
-  name       = "${var.project_name}-subnet_group_db"
-  subnet_ids = aws_subnet.private_subnet[*].id
-  tags = {
-    Name = "${var.project_name}-subnet_group_db"
-  }
-}
 
-resource "aws_db_instance" "my_rds_instance" {
-  allocated_storage      = var.allocated_storage
-  instance_class         = var.instance_class
-  engine                 = var.db_engine
-  db_name                = var.db_name
-  username               = var.username
-  password               = var.db_password
-  parameter_group_name   = aws_db_parameter_group.parameter_group_db.name
-  db_subnet_group_name   = aws_db_subnet_group.subnet_group_db.name
-  multi_az               = var.db_multi_authorization
-  publicly_accessible    = var.db_public_access
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
-  skip_final_snapshot    = true
-  tags = {
-    Name = "${var.project_name}-rds-instance"
-  }
-}
+
+
 
 # Launch Template
 resource "aws_launch_template" "web_app_template" {
@@ -409,7 +490,6 @@ resource "aws_route53_record" "webapp" {
   zone_id = var.route53_zone_id
   name    = var.domain_name
   type    = "A"
-
   alias {
     name                   = aws_lb.application_lb.dns_name
     zone_id                = aws_lb.application_lb.zone_id
