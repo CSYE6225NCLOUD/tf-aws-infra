@@ -86,6 +86,14 @@ variable "db_password" {
   description = "Password of database"
 }
 
+variable "threshold_scaleup" {
+  description = "threshold for scaleup"
+}
+
+variable "threshold_scaledown" {
+  description = "threshold for scaledown"
+}
+
 variable "db_multi_authorization" {
   description = "Authorization for database"
   default     = false
