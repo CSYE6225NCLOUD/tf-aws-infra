@@ -70,44 +70,7 @@ resource "aws_route_table_association" "private_association" {
 
 # Security Groups
 # Application Security Group
-resource "aws_security_group" "app_sg" {
-  name        = "application_security_group"
-  description = "Security group for web application EC2 instances"
-  vpc_id      = aws_vpc.my_vpc.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = var.application_port
-    to_port     = var.application_port
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# Security Group Rule to Allow Traffic from Load Balancer to EC2 Instances
-resource "aws_security_group_rule" "app_allow_lb_traffic" {
-  type                     = "ingress"
-  from_port                = var.application_port
-  to_port                  = var.application_port
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.lb_security_group.id
-  security_group_id        = aws_security_group.app_sg.id
-}
-
-
+# Load Balancer Security Group
 resource "aws_security_group" "lb_security_group" {
   name        = "${var.project_name}-load-balancer-sg"
   description = "Security group for the load balancer"
@@ -134,6 +97,38 @@ resource "aws_security_group" "lb_security_group" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
+
+# Application Security Group
+resource "aws_security_group" "app_sg" {
+  name        = "application_security_group"
+  description = "Security group for web application EC2 instances"
+  vpc_id      = aws_vpc.my_vpc.id
+
+  # SSH access (if required)
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow traffic from the load balancer on the application port
+  ingress {
+    from_port       = var.application_port
+    to_port         = var.application_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lb_security_group.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+
 
 resource "aws_security_group" "security_group_db" {
   name        = "security_group_database"
@@ -276,11 +271,12 @@ resource "aws_db_instance" "my_rds_instance" {
     Name = "${var.project_name}-rds-instance"
   }
 }
-
+# Generate a UUID for the S3 bucket name
+resource "random_uuid" "s3_bucket_name" {}
 
 # S3 Bucket for User Images
 resource "aws_s3_bucket" "user_images" {
-  bucket        = "${var.project_name}-${random_string.bucket_suffix.result}"
+  bucket        = random_uuid.s3_bucket_name.result
   acl           = "private"
   force_destroy = true
 
@@ -335,8 +331,8 @@ resource "aws_launch_template" "web_app_template" {
   user_data = base64encode(<<-EOF
     #!/bin/bash
     echo "DB_HOST=${aws_db_instance.my_rds_instance.address}" >> /etc/webapp.env
-    echo "DB_NAME=csye6225" >> /etc/webapp.env
-    echo "DB_USER=csye6225" >> /etc/webapp.env
+    echo "DB_NAME=${var.db_name}" >> /etc/webapp.env
+    echo "DB_USER=${var.username}" >> /etc/webapp.env
     echo "DB_PASSWORD=${var.db_password}" >> /etc/webapp.env
     echo "DB_DIALECT=mysql" >> /etc/webapp.env
     echo "S3_BUCKET_NAME=${aws_s3_bucket.user_images.bucket}" >> /etc/webapp.env
@@ -379,6 +375,7 @@ resource "aws_autoscaling_group" "web_app_asg" {
   min_size                  = 3
   max_size                  = 5
   vpc_zone_identifier       = tolist([for subnet in aws_subnet.public_subnet : subnet.id])
+  target_group_arns         = [aws_lb_target_group.app_target_group.arn]
   health_check_grace_period = 300
   launch_template {
     id      = aws_launch_template.web_app_template.id
@@ -420,7 +417,7 @@ resource "aws_cloudwatch_metric_alarm" "scale_up_alarm" {
   namespace           = "AWS/EC2"
   period              = 300
   statistic           = "Average"
-  threshold           = 5.0 # Scale up when CPU usage is above 5%
+  threshold           = var.threshold_scaleup
   alarm_actions       = [aws_autoscaling_policy.scale_up_policy.arn]
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.web_app_asg.name
@@ -435,7 +432,7 @@ resource "aws_cloudwatch_metric_alarm" "scale_down_alarm" {
   namespace           = "AWS/EC2"
   period              = 300
   statistic           = "Average"
-  threshold           = 3.0 # Scale down when CPU usage is below 3%
+  threshold           = var.threshold_scaledown
   alarm_actions       = [aws_autoscaling_policy.scale_down_policy.arn]
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.web_app_asg.name
@@ -473,7 +470,7 @@ resource "aws_lb_target_group" "app_target_group" {
   vpc_id   = aws_vpc.my_vpc.id
 
   health_check {
-    path                = "/"
+    path                = "/healthz"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 3
