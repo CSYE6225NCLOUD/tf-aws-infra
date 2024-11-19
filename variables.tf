@@ -118,3 +118,13 @@ variable "environment" {
   description = "Environment name, e.g., dev or demo"
   type        = string
 }
+
+variable "sendgrid_api_key" {
+  type        = string
+  description = "API Key for SendGrid"
+}
+
+variable "sendgrid_from_email" {
+  type        = string
+  description = "Sender email address for SendGrid"
+}

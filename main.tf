@@ -81,6 +81,7 @@ resource "aws_security_group" "lb_security_group" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   ingress {
@@ -88,6 +89,7 @@ resource "aws_security_group" "lb_security_group" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   egress {
@@ -95,6 +97,7 @@ resource "aws_security_group" "lb_security_group" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 }
 
@@ -310,11 +313,144 @@ resource "random_string" "bucket_suffix" {
 
 
 
+# AWS Lambda Function
+resource "aws_lambda_function" "email_verification" {
+  function_name    = "emailVerificationFunction"
+  runtime          = "nodejs18.x"
+  handler          = "index.handler"
+  role             = aws_iam_role.lambda_execution_role.arn
+  timeout          = 30
+  memory_size      = 128
+  source_code_hash = filebase64sha256("/Users/shubhamlakhotia/CloudComputing/serverless/Archive.zip")
+  filename         = "/Users/shubhamlakhotia/CloudComputing/serverless/Archive.zip"
 
+  environment {
+    variables = {
+      SENDGRID_API_KEY    = var.sendgrid_api_key
+      SENDGRID_FROM_EMAIL = var.sendgrid_from_email
+      DOMAIN_NAME         = var.domain_name
+      SNS_TOPIC_ARN       = aws_sns_topic.verification_topic.arn
+    }
+  }
+}
+
+# SNS Topic for Email Verification
+resource "aws_sns_topic" "verification_topic" {
+  name = "email-verification-topic"
+}
+
+# SNS Topic Policy
+resource "aws_sns_topic_policy" "verification_topic_policy" {
+  arn = aws_sns_topic.verification_topic.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Id      = "EmailVerificationTopicPolicy",
+    Statement = [
+      {
+        Sid    = "AllowLambdaToPublish",
+        Effect = "Allow",
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        },
+        Action   = "sns:Publish",
+        Resource = aws_sns_topic.verification_topic.arn,
+        Condition = {
+          ArnLike : {
+            "AWS:SourceArn" : aws_lambda_function.email_verification.arn
+          }
+        }
+      },
+      {
+        Sid    = "AllowSpecificIAMRoleToPublish",
+        Effect = "Allow",
+        Principal = {
+          AWS = aws_iam_role.ec2_role.arn
+        },
+        Action   = "sns:Publish",
+        Resource = aws_sns_topic.verification_topic.arn
+      }
+    ]
+  })
+}
+
+# Lambda Execution Role
+resource "aws_iam_role" "lambda_execution_role" {
+  name = "lambda_execution_role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+# IAM Policy for Lambda
+resource "aws_iam_policy" "lambda_policy" {
+  name        = "${var.project_name}-lambda-policy"
+  description = "Policy for Lambda function to access SNS, RDS, and logs"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["sns:Publish"],
+        Resource = aws_sns_topic.verification_topic.arn
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "rds:DescribeDBInstances",
+          "rds-db:connect"
+        ],
+        Resource = aws_db_instance.my_rds_instance.arn
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
+# Attach Policy to Role
+resource "aws_iam_role_policy_attachment" "lambda_policy_attachment" {
+  role       = aws_iam_role.lambda_execution_role.name
+  policy_arn = aws_iam_policy.lambda_policy.arn
+}
+
+# SNS Subscription for Lambda
+resource "aws_sns_topic_subscription" "email_verification_lambda" {
+  topic_arn = aws_sns_topic.verification_topic.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.email_verification.arn
+}
+
+# Lambda Permission for SNS Invocation
+resource "aws_lambda_permission" "allow_sns_to_invoke_lambda" {
+  statement_id  = "AllowSNSInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.email_verification.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.verification_topic.arn
+}
 
 # Launch Template
 resource "aws_launch_template" "web_app_template" {
-  name_prefix   = "${var.project_name}-asg-template"
+  name          = "launch-template"
   image_id      = var.custom_ami_id
   instance_type = var.instance_type
   key_name      = var.key_name
@@ -337,6 +473,8 @@ resource "aws_launch_template" "web_app_template" {
     echo "DB_DIALECT=mysql" >> /etc/webapp.env
     echo "S3_BUCKET_NAME=${aws_s3_bucket.user_images.bucket}" >> /etc/webapp.env
     echo "AWS_REGION=${var.aws_region}" >> /etc/webapp.env
+    echo "SNS_TOPIC_ARN=${aws_sns_topic.verification_topic.arn}" >> /etc/webapp.env
+    echo "DOMAIN_NAME=${var.domain_name}" >> /etc/webapp.env
 
     sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
     -a fetch-config \
@@ -371,6 +509,7 @@ resource "aws_launch_template" "web_app_template" {
 
 # Auto Scaling Group
 resource "aws_autoscaling_group" "web_app_asg" {
+  name                      = "ASG"
   desired_capacity          = 3
   min_size                  = 3
   max_size                  = 5
