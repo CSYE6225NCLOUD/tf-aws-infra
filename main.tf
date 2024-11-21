@@ -315,14 +315,13 @@ resource "random_string" "bucket_suffix" {
 
 # AWS Lambda Function
 resource "aws_lambda_function" "email_verification" {
-  function_name    = "emailVerificationFunction"
-  runtime          = "nodejs18.x"
-  handler          = "index.handler"
-  role             = aws_iam_role.lambda_execution_role.arn
-  timeout          = 30
-  memory_size      = 128
-  source_code_hash = filebase64sha256("/Users/shubhamlakhotia/CloudComputing/serverless/Archive.zip")
-  filename         = "/Users/shubhamlakhotia/CloudComputing/serverless/Archive.zip"
+  function_name = "emailVerificationFunction"
+  runtime       = "nodejs18.x"
+  handler       = "index.handler"
+  role          = aws_iam_role.lambda_execution_role.arn
+  timeout       = 30
+  memory_size   = 128
+  filename      = "/Users/shubhamlakhotia/CloudComputing/serverless/Archive.zip"
 
   environment {
     variables = {
