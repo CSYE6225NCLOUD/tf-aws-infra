@@ -76,13 +76,7 @@ resource "aws_security_group" "lb_security_group" {
   description = "Security group for the load balancer"
   vpc_id      = aws_vpc.my_vpc.id
 
-  ingress {
-    from_port        = 80
-    to_port          = 80
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
+
 
   ingress {
     from_port        = 443
@@ -310,6 +304,39 @@ resource "random_string" "bucket_suffix" {
   upper   = false
 }
 
+data "aws_acm_certificate" "imported_certificate" {
+  domain = var.domain_name
+
+  # Optional: If you have multiple certificates, use this to ensure the correct one is fetched.
+  statuses = ["ISSUED"]
+  types    = ["IMPORTED"]
+}
+
+
+resource "aws_lb_listener" "https_listener" {
+  load_balancer_arn = aws_lb.application_lb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = data.aws_acm_certificate.imported_certificate.arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app_target_group.arn
+  }
+}
+
+
+resource "aws_route53_record" "webapp_https" {
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "A"
+  alias {
+    name                   = aws_lb.application_lb.dns_name
+    zone_id                = aws_lb.application_lb.zone_id
+    evaluate_target_health = true
+  }
+}
 
 
 
@@ -620,17 +647,7 @@ resource "aws_lb_target_group" "app_target_group" {
   }
 }
 
-# Route 53 DNS Record
-resource "aws_route53_record" "webapp" {
-  zone_id = var.route53_zone_id
-  name    = var.domain_name
-  type    = "A"
-  alias {
-    name                   = aws_lb.application_lb.dns_name
-    zone_id                = aws_lb.application_lb.zone_id
-    evaluate_target_health = true
-  }
-}
+
 
 # Output for S3 Bucket Name
 output "s3_bucket_name" {
